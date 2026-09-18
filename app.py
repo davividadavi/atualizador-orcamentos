@@ -1,7 +1,6 @@
 import streamlit as st
 import pandas as pd
 import openpyxl
-from openpyxl.utils.dataframe import dataframe_to_rows
 import io
 
 st.set_page_config(page_title="Atualizador de Orçamento SINAPI", layout="centered")
@@ -16,6 +15,13 @@ with col2:
     ref_file = st.file_uploader("📥 2. Referência SINAPI Orçafascio (.xlsx)", type=["xlsx"])
 
 if budget_file and ref_file:
+    # Carrega o arquivo para ler o nome das abas antes de processar
+    wb = openpyxl.load_workbook(budget_file)
+    sheet_names = wb.sheetnames
+    
+    # Cria uma caixa de seleção para o usuário escolher a aba correta
+    selected_sheet = st.selectbox("📌 Selecione qual aba contém o Orçamento a ser atualizado:", sheet_names)
+
     if st.button("🚀 Processar Atualização"):
         with st.spinner("Analisando e atualizando valores..."):
             try:
@@ -28,23 +34,17 @@ if budget_file and ref_file:
                 ref_df = pd.read_excel(ref_file, header=ref_header_idx + 1)
                 
                 # Renomear colunas baseadas em posição caso os nomes tenham espaços ou variações
-                # A coluna de Código geralmente é a 2ª (índice 1) e Valor Unitário a 9ª (índice 8)
                 col_codigo_ref = ref_df.columns[1]
                 col_valor_ref = ref_df.columns[8]
                 
                 # Criar um dicionário de preços {codigo: valor}
-                # Remover nulos para não dar erro
                 ref_df_clean = ref_df.dropna(subset=[col_codigo_ref, col_valor_ref])
-                
-                # Converter para string para evitar problemas de tipos de dados (ex: '5881' vs 5881)
                 precos_dict = {str(k).strip(): v for k, v in zip(ref_df_clean[col_codigo_ref], ref_df_clean[col_valor_ref])}
 
-                # Agora, vamos trabalhar com a planilha orçamentária usando openpyxl para manter a formatação
-                wb = openpyxl.load_workbook(budget_file)
-                ws = wb.active # Pega a primeira aba
+                # Selecionar exatamente a aba que o usuário escolheu na caixinha
+                ws = wb[selected_sheet]
 
                 # Encontrar onde começam os dados na planilha orçamentária
-                # Procurar pela palavra "CÓDIGO"
                 header_row = None
                 codigo_col = None
                 custo_unit_col = None
@@ -53,8 +53,8 @@ if budget_file and ref_file:
                 quantidade_col = None
                 preco_total_col = None
 
-                for row in range(1, 30): # Procura nas primeiras 30 linhas
-                    for col in range(1, 15): # Procura nas primeiras 15 colunas
+                for row in range(1, 30): 
+                    for col in range(1, 15): 
                         cell_val = str(ws.cell(row=row, column=col).value).strip().upper()
                         if cell_val == "CÓDIGO":
                             header_row = row
@@ -62,7 +62,7 @@ if budget_file and ref_file:
                         elif cell_val == "CUSTO UNITÁRIO (SEM BDI)":
                             custo_unit_col = col
                         elif cell_val == "VALOR UNITÁRIO (R$)":
-                            custo_unit_col = col # Depende da nomenclatura exata
+                            custo_unit_col = col 
                         elif cell_val == "BDI":
                             bdi_col = col
                         elif cell_val == "PREÇO UNITÁRIO (COM BDI)":
@@ -73,10 +73,9 @@ if budget_file and ref_file:
                             preco_total_col = col
 
                 if not header_row or not codigo_col:
-                    st.error("Não foi possível encontrar a coluna 'CÓDIGO' na Planilha Orçamentária.")
+                    st.error(f"Não foi possível encontrar a coluna 'CÓDIGO' na aba '{selected_sheet}'. Verifique se escolheu a aba correta.")
                     st.stop()
                 
-                # Se achou "VALOR UNITÁRIO (R$)" mas não "CUSTO UNITÁRIO (SEM BDI)"
                 if not custo_unit_col:
                      for col in range(1, 15):
                          if "VALOR UNITÁRIO" in str(ws.cell(row=header_row, column=col).value).upper():
@@ -92,17 +91,14 @@ if budget_file and ref_file:
                     if cod_val and cod_val in precos_dict:
                         novo_valor = precos_dict[cod_val]
                         
-                        # Atualizar Custo Unitário
                         if custo_unit_col:
                             ws.cell(row=row, column=custo_unit_col).value = novo_valor
                         
-                        # Pegar BDI e recalcular
                         bdi_val = 0
                         if bdi_col:
                             bdi_raw = ws.cell(row=row, column=bdi_col).value
                             if bdi_raw is not None:
                                 try:
-                                    # Se for percentual (0.296)
                                     bdi_val = float(bdi_raw) 
                                 except:
                                     pass
@@ -112,7 +108,6 @@ if budget_file and ref_file:
                         if preco_unit_col:
                             ws.cell(row=row, column=preco_unit_col).value = novo_preco_com_bdi
                             
-                        # Recalcular Preço Total
                         if quantidade_col and preco_total_col:
                             qtd = ws.cell(row=row, column=quantidade_col).value
                             if qtd is not None:
@@ -129,7 +124,7 @@ if budget_file and ref_file:
                 wb.save(output)
                 output.seek(0)
                 
-                st.success(f"✅ Atualização concluída! {itens_atualizados} itens foram atualizados com os novos valores.")
+                st.success(f"✅ Atualização concluída! {itens_atualizados} itens foram atualizados na aba '{selected_sheet}'. As outras abas não foram alteradas.")
                 
                 st.download_button(
                     label="⬇️ Baixar Planilha Atualizada",
