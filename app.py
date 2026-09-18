@@ -27,7 +27,6 @@ if budget_file and ref_file:
             try:
                 # Carregar o arquivo de referência (Orçafascio) para extrair os novos preços
                 ref_df_raw = pd.read_excel(ref_file)
-                # Encontrar a linha de cabeçalho (onde tem "Código")
                 ref_header_idx = ref_df_raw[ref_df_raw.apply(lambda r: r.astype(str).str.contains("Código", na=False).any(), axis=1)].index[0]
                 
                 # Ler a referência com o cabeçalho correto
@@ -82,6 +81,7 @@ if budget_file and ref_file:
                              custo_unit_col = col
                 
                 itens_atualizados = 0
+                log_alteracoes = [] # Lista para guardar o histórico de modificações
 
                 # Iterar sobre as linhas da planilha de orçamento e atualizar
                 for row in range(header_row + 1, ws.max_row + 1):
@@ -90,8 +90,18 @@ if budget_file and ref_file:
                     
                     if cod_val and cod_val in precos_dict:
                         novo_valor = precos_dict[cod_val]
+                        valor_antigo = 0.0
                         
                         if custo_unit_col:
+                            # Salva o valor antigo antes de sobrescrever
+                            celula_antiga = ws.cell(row=row, column=custo_unit_col).value
+                            if celula_antiga is not None:
+                                try:
+                                    valor_antigo = float(celula_antiga)
+                                except:
+                                    pass
+                            
+                            # Atualiza para o novo valor
                             ws.cell(row=row, column=custo_unit_col).value = novo_valor
                         
                         bdi_val = 0
@@ -117,6 +127,14 @@ if budget_file and ref_file:
                                 except:
                                     pass
                         
+                        # Adiciona o registro no relatório de conferência
+                        log_alteracoes.append({
+                            "Linha Excel": row,
+                            "Código": cod_val,
+                            "Valor Antigo (R$)": valor_antigo,
+                            "Novo Valor (R$)": novo_valor
+                        })
+                        
                         itens_atualizados += 1
 
                 # Salvar em memória
@@ -124,7 +142,22 @@ if budget_file and ref_file:
                 wb.save(output)
                 output.seek(0)
                 
-                st.success(f"✅ Atualização concluída! {itens_atualizados} itens foram atualizados na aba '{selected_sheet}'. As outras abas não foram alteradas.")
+                st.success(f"✅ Atualização concluída! {itens_atualizados} itens foram atualizados na aba '{selected_sheet}'.")
+                
+                # Exibir a tabela de conferência se houver atualizações
+                if log_alteracoes:
+                    st.write("### 📊 Relatório de Conferência")
+                    st.write("Verifique abaixo os valores antigos e os novos valores aplicados:")
+                    df_log = pd.DataFrame(log_alteracoes)
+                    
+                    # Formatar a tabela para exibir como moeda
+                    st.dataframe(
+                        df_log.style.format({
+                            "Valor Antigo (R$)": "{:.2f}",
+                            "Novo Valor (R$)": "{:.2f}"
+                        }),
+                        use_container_width=True
+                    )
                 
                 st.download_button(
                     label="⬇️ Baixar Planilha Atualizada",
