@@ -15,38 +15,40 @@ with col2:
     ref_file = st.file_uploader("📥 2. Referência SINAPI Orçafascio (.xlsx)", type=["xlsx"])
 
 if budget_file and ref_file:
+    # Retorna o ponteiro do arquivo para o início antes de ler
+    budget_file.seek(0)
     wb = openpyxl.load_workbook(budget_file)
-    sheet_names = wb.sheetnames
     
+    # Abre uma SEGUNDA cópia apenas para ler os resultados das fórmulas
+    budget_file.seek(0)
+    wb_data_only = openpyxl.load_workbook(budget_file, data_only=True)
+    
+    sheet_names = wb.sheetnames
     selected_sheet = st.selectbox("📌 Selecione qual aba contém o Orçamento a ser atualizado:", sheet_names)
 
     if st.button("🚀 Processar Atualização"):
         with st.spinner("Analisando e atualizando valores..."):
             try:
-                # Carregar o arquivo de referência (Orçafascio) para extrair os novos preços
                 ref_df_raw = pd.read_excel(ref_file)
                 ref_header_idx = ref_df_raw[ref_df_raw.apply(lambda r: r.astype(str).str.contains("Código", case=False, na=False).any(), axis=1)].index[0]
                 
-                # Ler a referência com o cabeçalho correto
                 ref_df = pd.read_excel(ref_file, header=ref_header_idx + 1)
                 
-                # Renomear colunas baseadas em posição caso os nomes tenham espaços ou variações
                 col_codigo_ref = ref_df.columns[1]
                 col_valor_ref = ref_df.columns[8]
                 
-                # Limpar os dados e ignorar cabeçalhos repetidos de quebra de página do Orçafascio
                 ref_df_clean = ref_df.dropna(subset=[col_codigo_ref, col_valor_ref])
                 precos_dict = {}
                 for k, v in zip(ref_df_clean[col_codigo_ref], ref_df_clean[col_valor_ref]):
                     chave = str(k).strip()
-                    # Bloqueia que o cabeçalho vire um código de orçamento
                     if chave.upper() not in ["CÓDIGO", "CODIGO", "NAN", ""]:
                         precos_dict[chave] = v
 
-                # Selecionar a aba escolhida pelo usuário
+                # Planilha de edição (onde vamos salvar)
                 ws = wb[selected_sheet]
+                # Planilha de leitura (onde vamos pegar os valores das fórmulas)
+                ws_data = wb_data_only[selected_sheet]
 
-                # Encontrar as colunas na planilha orçamentária de forma DINÂMICA
                 header_row = None
                 codigo_col = None
                 custo_unit_col = None
@@ -55,7 +57,6 @@ if budget_file and ref_file:
                 quantidade_col = None
                 preco_total_col = None
 
-                # 1. Primeiro encontra em qual linha está o cabeçalho procurando pela coluna "CÓDIGO"
                 for row in range(1, 30): 
                     for col in range(1, 15): 
                         cell_val = str(ws.cell(row=row, column=col).value).strip().upper()
@@ -67,10 +68,9 @@ if budget_file and ref_file:
                         break
 
                 if not header_row or not codigo_col:
-                    st.error(f"Não foi possível encontrar a coluna 'CÓDIGO' na aba '{selected_sheet}'. Verifique se escolheu a aba correta.")
+                    st.error(f"Não foi possível encontrar a coluna 'CÓDIGO' na aba '{selected_sheet}'.")
                     st.stop()
                 
-                # 2. Agora mapeia todas as outras colunas lendo os sinônimos na mesma linha
                 for col in range(1, 20):
                     cell_val = str(ws.cell(row=header_row, column=col).value).strip().upper()
                     if not cell_val or cell_val == "NONE": continue
@@ -87,18 +87,16 @@ if budget_file and ref_file:
                         preco_total_col = col
 
                 if not custo_unit_col:
-                    st.error(f"Não foi possível encontrar a coluna de Valor Unitário na aba '{selected_sheet}'. O nome no cabeçalho deve ser algo como 'Valor Unit', 'Custo Unitário', etc.")
+                    st.error(f"Não foi possível encontrar a coluna de Valor Unitário na aba '{selected_sheet}'.")
                     st.stop()
 
                 itens_atualizados = 0
                 log_alteracoes = [] 
 
-                # Iterar sobre as linhas da planilha de orçamento e atualizar
                 for row in range(header_row + 1, ws.max_row + 1):
                     cod_cell = ws.cell(row=row, column=codigo_col)
                     cod_val = str(cod_cell.value).strip() if cod_cell.value else None
                     
-                    # Ignorar linhas vazias ou sub-cabeçalhos na sua planilha orçamentária
                     if not cod_val or cod_val.upper() in ["CÓDIGO", "CODIGO", "NONE"]:
                         continue
 
@@ -107,25 +105,27 @@ if budget_file and ref_file:
                         valor_antigo = 0.0
                         
                         if custo_unit_col:
-                            celula_antiga = ws.cell(row=row, column=custo_unit_col).value
+                            # AQUI ESTÁ O TRUQUE: Lemos o valor da planilha "data_only"
+                            celula_antiga = ws_data.cell(row=row, column=custo_unit_col).value
                             if celula_antiga is not None:
                                 try:
                                     valor_antigo = float(celula_antiga)
                                 except:
                                     valor_antigo = celula_antiga 
                             
+                            # E gravamos o valor novo na planilha oficial
                             ws.cell(row=row, column=custo_unit_col).value = novo_valor
                         
                         bdi_val = 0
                         if bdi_col:
-                            bdi_raw = ws.cell(row=row, column=bdi_col).value
+                            # Lê o BDI da planilha data_only também, caso seja uma fórmula
+                            bdi_raw = ws_data.cell(row=row, column=bdi_col).value
                             if bdi_raw is not None:
                                 try:
                                     bdi_val = float(bdi_raw) 
                                 except:
                                     pass
                         
-                        # Recalcular garantindo que seja numérico
                         try:
                             novo_preco_com_bdi = float(novo_valor) * (1 + bdi_val)
                         except:
@@ -135,7 +135,8 @@ if budget_file and ref_file:
                             ws.cell(row=row, column=preco_unit_col).value = novo_preco_com_bdi
                             
                         if quantidade_col and preco_total_col:
-                            qtd = ws.cell(row=row, column=quantidade_col).value
+                            # Lê a quantidade da planilha data_only, caso seja fórmula
+                            qtd = ws_data.cell(row=row, column=quantidade_col).value
                             if qtd is not None:
                                 try:
                                     qtd_float = float(qtd)
