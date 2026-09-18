@@ -15,35 +15,27 @@ with col2:
     ref_file = st.file_uploader("📥 2. Referência SINAPI Orçafascio (.xlsx)", type=["xlsx"])
 
 if budget_file and ref_file:
-    # Carrega o arquivo para ler o nome das abas antes de processar
     wb = openpyxl.load_workbook(budget_file)
     sheet_names = wb.sheetnames
     
-    # Cria uma caixa de seleção para o usuário escolher a aba correta
     selected_sheet = st.selectbox("📌 Selecione qual aba contém o Orçamento a ser atualizado:", sheet_names)
 
     if st.button("🚀 Processar Atualização"):
         with st.spinner("Analisando e atualizando valores..."):
             try:
-                # Carregar o arquivo de referência (Orçafascio) para extrair os novos preços
                 ref_df_raw = pd.read_excel(ref_file)
                 ref_header_idx = ref_df_raw[ref_df_raw.apply(lambda r: r.astype(str).str.contains("Código", na=False).any(), axis=1)].index[0]
                 
-                # Ler a referência com o cabeçalho correto
                 ref_df = pd.read_excel(ref_file, header=ref_header_idx + 1)
                 
-                # Renomear colunas baseadas em posição caso os nomes tenham espaços ou variações
                 col_codigo_ref = ref_df.columns[1]
                 col_valor_ref = ref_df.columns[8]
                 
-                # Criar um dicionário de preços {codigo: valor}
                 ref_df_clean = ref_df.dropna(subset=[col_codigo_ref, col_valor_ref])
                 precos_dict = {str(k).strip(): v for k, v in zip(ref_df_clean[col_codigo_ref], ref_df_clean[col_valor_ref])}
 
-                # Selecionar exatamente a aba que o usuário escolheu na caixinha
                 ws = wb[selected_sheet]
 
-                # Encontrar onde começam os dados na planilha orçamentária
                 header_row = None
                 codigo_col = None
                 custo_unit_col = None
@@ -81,9 +73,8 @@ if budget_file and ref_file:
                              custo_unit_col = col
                 
                 itens_atualizados = 0
-                log_alteracoes = [] # Lista para guardar o histórico de modificações
+                log_alteracoes = [] 
 
-                # Iterar sobre as linhas da planilha de orçamento e atualizar
                 for row in range(header_row + 1, ws.max_row + 1):
                     cod_cell = ws.cell(row=row, column=codigo_col)
                     cod_val = str(cod_cell.value).strip() if cod_cell.value else None
@@ -93,15 +84,13 @@ if budget_file and ref_file:
                         valor_antigo = 0.0
                         
                         if custo_unit_col:
-                            # Salva o valor antigo antes de sobrescrever
                             celula_antiga = ws.cell(row=row, column=custo_unit_col).value
                             if celula_antiga is not None:
                                 try:
                                     valor_antigo = float(celula_antiga)
                                 except:
-                                    pass
+                                    valor_antigo = celula_antiga # Guarda como texto se não conseguir converter
                             
-                            # Atualiza para o novo valor
                             ws.cell(row=row, column=custo_unit_col).value = novo_valor
                         
                         bdi_val = 0
@@ -113,7 +102,11 @@ if budget_file and ref_file:
                                 except:
                                     pass
                         
-                        novo_preco_com_bdi = novo_valor * (1 + bdi_val)
+                        # Tenta recalcular o BDI garantindo que o novo valor é numérico
+                        try:
+                            novo_preco_com_bdi = float(novo_valor) * (1 + bdi_val)
+                        except:
+                            novo_preco_com_bdi = novo_valor
                         
                         if preco_unit_col:
                             ws.cell(row=row, column=preco_unit_col).value = novo_preco_com_bdi
@@ -123,11 +116,10 @@ if budget_file and ref_file:
                             if qtd is not None:
                                 try:
                                     qtd_float = float(qtd)
-                                    ws.cell(row=row, column=preco_total_col).value = qtd_float * novo_preco_com_bdi
+                                    ws.cell(row=row, column=preco_total_col).value = qtd_float * float(novo_preco_com_bdi)
                                 except:
                                     pass
                         
-                        # Adiciona o registro no relatório de conferência
                         log_alteracoes.append({
                             "Linha Excel": row,
                             "Código": cod_val,
@@ -137,20 +129,21 @@ if budget_file and ref_file:
                         
                         itens_atualizados += 1
 
-                # Salvar em memória
                 output = io.BytesIO()
                 wb.save(output)
                 output.seek(0)
                 
                 st.success(f"✅ Atualização concluída! {itens_atualizados} itens foram atualizados na aba '{selected_sheet}'.")
                 
-                # Exibir a tabela de conferência se houver atualizações
                 if log_alteracoes:
                     st.write("### 📊 Relatório de Conferência")
                     st.write("Verifique abaixo os valores antigos e os novos valores aplicados:")
                     df_log = pd.DataFrame(log_alteracoes)
                     
-                    # Formatar a tabela para exibir como moeda
+                    # CORREÇÃO: Forçar todas as colunas de valor a serem números (float)
+                    df_log["Valor Antigo (R$)"] = pd.to_numeric(df_log["Valor Antigo (R$)"], errors='coerce').fillna(0)
+                    df_log["Novo Valor (R$)"] = pd.to_numeric(df_log["Novo Valor (R$)"], errors='coerce').fillna(0)
+                    
                     st.dataframe(
                         df_log.style.format({
                             "Valor Antigo (R$)": "{:.2f}",
